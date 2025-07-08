@@ -1,0 +1,34 @@
+📜 RULES FOR PLAY
+
+1️⃣ Two Player Battle  
+- Game begins when 2 players join the same room.
+
+2️⃣ Name Assignment  
+- Each player receives 6 secret names.  
+- Your task: Place these names on your 10×10 grid.  
+- You can place names horizontally or vertically (not diagonally).  
+- Names must not overlap.
+
+3️⃣ Grid Setup  
+- Drag or tap to place each name on empty grid cells.  
+- After placing all 6 names, press "Ready".
+
+4️⃣ Toss Time  
+- Once both players are ready, a coin toss decides who starts first.
+
+5️⃣ Turn-Based Attacks  
+- Take turns tapping cells on your opponent's grid.  
+- If you hit a correct letter, it gets revealed.  
+- A wrong guess ends your turn.
+
+6️⃣ Reveal and Destroy  
+- Reveal all letters of a name to destroy it.  
+- Your goal: Find and destroy all 6 of your opponent’s names.
+
+7️⃣ Victory  
+- First player to find all 6 enemy names wins the game.  
+- If both players reveal the last name in the same round, it's a draw.
+
+🛡 TIPS  
+- Think like a strategist. Spread your names smartly!  
+- Try to predict enemy patterns while guessing.
