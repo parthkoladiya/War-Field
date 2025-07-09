@@ -10,6 +10,7 @@ using ZXing;
 using ZXing.QrCode;
 using ZXing.Unity;
 using System.Collections.Generic;
+using UnityEngine.SceneManagement;
 
 public class LobbyManager : MonoBehaviourPunCallbacks
 {
@@ -36,6 +37,8 @@ public class LobbyManager : MonoBehaviourPunCallbacks
     public TMP_Text feedbackText;
     public TMP_Text feedbackTextInvite;
     public GameObject feedbackText1;
+    public RectTransform roomCodePanel; // <-- Add this for moving the panel
+    public GameObject GameNotAvailable;
 
     [Header("Toast UI")]
     public GameObject toastPanel;
@@ -51,6 +54,7 @@ public class LobbyManager : MonoBehaviourPunCallbacks
 
     public GameObject[] characterSlots; // Parent objects of each character icon (with border inside)
     private int currentSelectedIndex = -1;
+    private string lastTriedRoomCode = "";
 
     public GameObject confromforquit;
 
@@ -68,6 +72,15 @@ public class LobbyManager : MonoBehaviourPunCallbacks
 
     // Camera control for lobby
     private WebCamTexture webcamTexture;
+
+    private Vector2 roomCodePanelOriginalPos; // For restoring position
+
+    public  int Codeenter;
+
+    // --- Events for Game Scene ---
+    // Game scene scripts can subscribe to these events
+    public static event System.Action<int, string> OnPlayerLeftRoomEvent; // actorNumber, playerName
+    public static event System.Action<int, string> OnPlayerRejoinedEvent; // actorNumber, playerName
 
     private void Awake()
     {
@@ -116,6 +129,38 @@ public class LobbyManager : MonoBehaviourPunCallbacks
             characterSlots[i].transform.Find("SelectionBorder").gameObject.SetActive(false);
             characterSlots[index].transform.Find("NameText").localScale = Vector3.one;
         }
+
+        // Store original position for room code panel
+        if (roomCodePanel != null)
+            roomCodePanelOriginalPos = roomCodePanel.anchoredPosition;
+        // Register input field events for keyboard handling
+        if (roomCodeInput != null)
+        {
+            roomCodeInput.onSelect.AddListener(OnRoomCodeInputSelected);
+            roomCodeInput.onDeselect.AddListener(OnRoomCodeInputDeselected);
+        }
+    }
+
+    private void OnRoomCodeInputSelected(string text)
+    {
+#if UNITY_ANDROID || UNITY_IOS
+        if (roomCodePanel != null)
+        {
+            // Move panel up (adjust value as needed)
+            roomCodePanel.anchoredPosition = roomCodePanelOriginalPos + new Vector2(0, 300);
+        }
+#endif
+    }
+
+    private void OnRoomCodeInputDeselected(string text)
+    {
+#if UNITY_ANDROID || UNITY_IOS
+        if (roomCodePanel != null)
+        {
+            // Move panel back to original position
+            roomCodePanel.anchoredPosition = roomCodePanelOriginalPos;
+        }
+#endif
     }
 
     private void SelectCharacter(int index)
@@ -223,12 +268,15 @@ public class LobbyManager : MonoBehaviourPunCallbacks
         cameraFeed.texture = camTexture;
         camTexture.Play();
         StartCoroutine(ScanQRCode());
-    }   
+    }
 
     IEnumerator ScanQRCode()
     {
         BarcodeReader reader = new BarcodeReader();
-        while (true)
+        float timeout = 10f; // 10 seconds timeout
+        float elapsed = 0f;
+
+        while (elapsed < timeout)
         {
             if (camTexture.width > 100 && camTexture.height > 100)
             {
@@ -245,22 +293,35 @@ public class LobbyManager : MonoBehaviourPunCallbacks
                 }
             }
             yield return new WaitForSeconds(0.5f);
+            elapsed += 0.5f;
         }
+
+        // Timeout reached, QR not working
+        camTexture.Stop();
+        ShowToast("QR is not working");
     }
 
     public void JoinRoomWithCode()
     {
-        string code = roomCodeInput.text.Trim();
-        if (string.IsNullOrEmpty(code))
+        if (Codeenter <= 2)
         {
-            feedbackText1.SetActive(true);
-            feedbackText.text = "Please enter a valid room code.";
-            return;
-        }
+            string code = roomCodeInput.text;
+            if (string.IsNullOrEmpty(code))
+            {
+                feedbackText1.SetActive(true);
+                feedbackText.text = "Please enter a valid room code.";
+                return;
+            }
 
-        PhotonNetwork.JoinRoom(code);
-        feedbackText1.SetActive(true);
-        feedbackText.text = "Joining room...";
+            PhotonNetwork.JoinRoom(code);
+            feedbackText1.SetActive(true);
+            feedbackText.text = "Joining room...";
+            Codeenter++;
+        }
+        else
+        {
+            ShowRoomNotAvailablePopup();
+        }
     }
 
     public void CopyRoomCode()
@@ -436,6 +497,12 @@ public class LobbyManager : MonoBehaviourPunCallbacks
         PhotonNetwork.NetworkingClient.EventReceived -= OnEvent;
     }
 
+    // Add this method to ensure event is unregistered if object is destroyed
+    void OnDestroy()
+    {
+        PhotonNetwork.NetworkingClient.EventReceived -= OnEvent;
+    }
+
     private void OnEvent(ExitGames.Client.Photon.EventData photonEvent)
     {
         if (photonEvent.Code == 100)
@@ -469,6 +536,9 @@ public class LobbyManager : MonoBehaviourPunCallbacks
         Debug.Log("Joined Room: " + PhotonNetwork.CurrentRoom.Name);
         if (PhotonNetwork.CurrentRoom.PlayerCount == 2)
         {
+            // Room ko close kar do
+            PhotonNetwork.CurrentRoom.IsOpen = false;
+            PhotonNetwork.CurrentRoom.IsVisible = false;
             PhotonNetwork.LoadLevel("Game");
         }
         else
@@ -481,8 +551,33 @@ public class LobbyManager : MonoBehaviourPunCallbacks
 
     public override void OnJoinRoomFailed(short returnCode, string message)
     {
-        feedbackText.text = "Failed to join room. Try again.";
+        Debug.Log("Join Room Failed: " + message);
+        if (SceneManager.GetActiveScene().name == "Game")
+        {
+            // Room ke state ke hisaab se check karo
+            if (GameManager.Instance == null || GameManager.Instance.spriteObj == null || !GameManager.Instance.spriteObj.activeSelf)
+            {
+                ShowRoomNotAvailablePopup();
+                return;
+            }
+        }
+        else
+        {
+            feedbackText.text = "Room code invalid ya expire ho gaya. Try another code.";
+        }
         Debug.LogError("Join Room Failed: " + message);
+    }
+
+    private void ShowRoomNotAvailablePopup()
+    {
+        GameNotAvailable.SetActive(true);
+        // ShowToast("Room is not available");
+        // Or activate a custom popup panel here if you have one
+    }
+
+    public void CloseGameNotAvailablePopup()
+    {
+        GameNotAvailable.SetActive(false);
     }
 
     public override void OnCreateRoomFailed(short returnCode, string message)
@@ -497,9 +592,26 @@ public class LobbyManager : MonoBehaviourPunCallbacks
         Debug.Log($"Player {newPlayer.NickName} entered the room.");
         if (PhotonNetwork.CurrentRoom.PlayerCount == 2)
         {
-            Debug.Log("2 players joined. Starting the game...");
+            // Room ko close kar do taki koi aur join na kar sake
+            PhotonNetwork.CurrentRoom.IsOpen = false;
+            PhotonNetwork.CurrentRoom.IsVisible = false;
+            Debug.Log("2 players joined. Room closed. Starting the game...");
             PhotonNetwork.LoadLevel("Game");
         }
+        // Hide reconnecting UI if player returns
+        OnPlayerRejoinedEvent?.Invoke(newPlayer.ActorNumber, newPlayer.NickName);
+    }
+
+    public override void OnLeftRoom()
+    {
+        Debug.Log("Left the room successfully.");
+        // Yahan aap apna back navigation ya UI update code daal sakte hain
+    }
+
+    public override void OnPlayerLeftRoom(Player otherPlayer)
+    {
+        Debug.Log($"{otherPlayer.NickName} left the room. Showing reconnecting UI.");
+        OnPlayerLeftRoomEvent?.Invoke(otherPlayer.ActorNumber, otherPlayer.NickName);
     }
 
     #endregion
@@ -546,6 +658,12 @@ public class LobbyManager : MonoBehaviourPunCallbacks
 
     public void OnBackButtonClicked()
     {
+        // If player is in a Photon room, leave the room
+        if (PhotonNetwork.InRoom)
+        {
+            PhotonNetwork.LeaveRoom();
+        }
+
         CloseQRCodeCamera();
         // ...baaki back navigation code...
     }

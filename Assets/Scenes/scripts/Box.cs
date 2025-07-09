@@ -71,11 +71,13 @@ public class Box : MonoBehaviour,
             if (!GameManager.getInstance().currentSelectedBox.isItFixed)
             {
                 GameManager.getInstance().currentSelectedBox.myChar = "";
-                GameManager.getInstance().currentSelectedBox.myLabel.text = GameManager.getInstance().currentSelectedBox.myChar.ToString();
+                GameManager.getInstance().currentSelectedBox.myLabel.text = "";
                 GameManager.getInstance().currentSelectedBox = null;
-                GameManager.getInstance().heighLigteIdentify(this);
+                // Also clear this box's preview if invalid
+                this.myChar = "";
+                if (this.myLabel != null) this.myLabel.text = "";
             }
-
+            GameManager.getInstance().heighLigteIdentify(this);
             return;
         }
 
@@ -88,7 +90,7 @@ public class Box : MonoBehaviour,
             if (GameManager.getInstance().currentSelectedBox != null && !GameManager.getInstance().currentSelectedBox.isItFixed)
             {
                 GameManager.getInstance().currentSelectedBox.myChar = "";
-                GameManager.getInstance().currentSelectedBox.myLabel.text = GameManager.getInstance().currentSelectedBox.myChar.ToString();
+                GameManager.getInstance().currentSelectedBox.myLabel.text = "";
                 GameManager.getInstance().currentSelectedBox = null;
             }
             GameManager.getInstance().heighLigteIdentify(this);

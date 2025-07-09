@@ -104,6 +104,8 @@ public class Weponselector : MonoBehaviour
 
     public void btnCliked()
     {
+        GameManager.getInstance().ClearAllPreviews();
+        GameManager.getInstance().ClearCurrentSelection();
         if (currentCount <= 0)
         {
             Debug.Log("No uses left for this weapon.");

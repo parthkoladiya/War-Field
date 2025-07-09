@@ -32,6 +32,9 @@ public class GameManager : MonoBehaviourPunCallbacks
 {
     public static GameManager Instance;
 
+    // --- Add this flag for weapon set phase ---
+    public bool isWeaponSetActive = false;
+
     [Header("Game Settings")]
     public float placementTime = 120f;
 
@@ -78,6 +81,9 @@ public class GameManager : MonoBehaviourPunCallbacks
     public TextMeshProUGUI winText;
     public GameObject winLosePanel;
     public GameObject areyousurepanel;
+    public GameObject opponentNotLongerPanel;
+    public GameObject ReconnectField;
+
 
     public string curruntStringType;
     public Box currentSelectedBox = null;
@@ -125,7 +131,6 @@ public class GameManager : MonoBehaviourPunCallbacks
     private float currentReconnectionTime;
     private bool isReconnecting = false;
     private Coroutine reconnectionCoroutine;
-    private int disconnectedPlayerActorNumber = -1;
     private bool wasInGame = false;
 
     public TextMeshProUGUI myTriesText;
@@ -174,6 +179,9 @@ public class GameManager : MonoBehaviourPunCallbacks
     // Add this for the popup
     public GameObject opponentSettingPopup; // Assign in inspector
 
+    public enum GamePhase { Placement, Gameplay }
+    public GamePhase currentPhase = GamePhase.Placement;
+
     public static GameManager getInstance()
     {
         return GameManagerobj;
@@ -188,6 +196,7 @@ public class GameManager : MonoBehaviourPunCallbacks
 
     void Start()
     {
+        Screen.sleepTimeout = SleepTimeout.NeverSleep;
         //odinHandler.JoinRoom("TestRoom");
 
         myTriesText.text = "Your Tries: " + playerTries.ToString();
@@ -225,6 +234,7 @@ public class GameManager : MonoBehaviourPunCallbacks
             opponentNameText.text = opponent.NickName;
         }
 
+        currentPhase = GamePhase.Placement; // Set phase to placement at start
     }
 
     public void closeAllLayer(int index)
@@ -545,6 +555,8 @@ public class GameManager : MonoBehaviourPunCallbacks
                 EnableTossButtonsIfMaster();
             }
         }
+        // Save state after placement
+        SaveStateToRoom();
     }
 
     [PunRPC]
@@ -687,6 +699,8 @@ public class GameManager : MonoBehaviourPunCallbacks
             StopCoroutine(mYCoroutine);
             mYCoroutine = null;
         }
+        // --- SYNC TIMER: Set timerDuration for every turn ---
+        timerDuration = 120f; // Set your desired turn timer here
         if (isMyTurn && !topPlacement.activeSelf && !tossPanel.activeSelf)
         {
             mYCoroutine = StartCoroutine(countdownTimer.StartCountdown());
@@ -703,6 +717,8 @@ public class GameManager : MonoBehaviourPunCallbacks
         YourCallText.text = isMyTurn ? "Your call" : "Opponent call";
         OnTurnChanged(myTurn);
         StartCoroutine(UpdateUI());
+        // Save state after turn change
+        SaveStateToRoom();
     }
 
     [PunRPC]
@@ -984,10 +1000,105 @@ public class GameManager : MonoBehaviourPunCallbacks
         opponentGridParent.gameObject.SetActive(false);
     }
 
+    // --- CUSTOM PLAYER COUNT AND PER-ACTOR DATA ---
+    // Track original ActorNumbers for reconnecting players
+    private Dictionary<string, int> originalActorNumbers = new Dictionary<string, int>();
+    private Dictionary<int, string> actorNumberToPlayerName = new Dictionary<int, string>();
+    // Track the last disconnected player's ActorNumber
+    private int lastDisconnectedActorNumber = -1;
+    
+    // Increment ActivePlayerCount in room properties
+    void IncrementActivePlayerCount()
+    {
+        if (PhotonNetwork.IsMasterClient && PhotonNetwork.CurrentRoom != null)
+        {
+            int count = 0;
+            if (PhotonNetwork.CurrentRoom.CustomProperties.TryGetValue("ActivePlayerCount", out object value))
+                count = (int)value;
+            count++;
+            ExitGames.Client.Photon.Hashtable props = new ExitGames.Client.Photon.Hashtable();
+            props["ActivePlayerCount"] = count;
+            PhotonNetwork.CurrentRoom.SetCustomProperties(props);
+        }
+    }
+
+    // Decrement ActivePlayerCount in room properties
+    void DecrementActivePlayerCount()
+    {
+        if (PhotonNetwork.IsMasterClient && PhotonNetwork.CurrentRoom != null)
+        {
+            int count = 0;
+            if (PhotonNetwork.CurrentRoom.CustomProperties.TryGetValue("ActivePlayerCount", out object value))
+                count = (int)value;
+            count = Mathf.Max(0, count - 1);
+            ExitGames.Client.Photon.Hashtable props = new ExitGames.Client.Photon.Hashtable();
+            props["ActivePlayerCount"] = count;
+            PhotonNetwork.CurrentRoom.SetCustomProperties(props);
+        }
+    }
+
+    // Store original ActorNumber when player leaves
+    void StoreOriginalActorNumber(Player player)
+    {
+        if (!originalActorNumbers.ContainsKey(player.NickName))
+        {
+            originalActorNumbers[player.NickName] = player.ActorNumber;
+            actorNumberToPlayerName[player.ActorNumber] = player.NickName;
+            Debug.Log($"Stored original ActorNumber {player.ActorNumber} for {player.NickName}");
+        }
+    }
+
+    // Get original ActorNumber for a player
+    int GetOriginalActorNumber(string playerName)
+    {
+        if (originalActorNumbers.ContainsKey(playerName))
+        {
+            return originalActorNumbers[playerName];
+        }
+        return -1; // Not found
+    }
+
+    // Check if this is a reconnecting player
+    bool IsReconnectingPlayer(Player player)
+    {
+        return originalActorNumbers.ContainsKey(player.NickName);
+    }
+
+    // Save state for a specific player using NickName
+    void SaveStateForPlayer(Player player)
+    {
+        string key = $"GameState_{player.NickName}";
+        var state = GetCurrentGameState();
+        string json = JsonConvert.SerializeObject(state);
+        ExitGames.Client.Photon.Hashtable props = new ExitGames.Client.Photon.Hashtable();
+        props[key] = json;
+        if (PhotonNetwork.CurrentRoom != null)
+            PhotonNetwork.CurrentRoom.SetCustomProperties(props);
+    }
+
+    // Load state for a specific player using NickName
+    void LoadStateForPlayer(Player player)
+    {
+        string key = $"GameState_{player.NickName}";
+        if (PhotonNetwork.CurrentRoom != null && PhotonNetwork.CurrentRoom.CustomProperties.TryGetValue(key, out object stateJson))
+        {
+            var state = JsonConvert.DeserializeObject<GameStateData>(stateJson.ToString());
+            ApplyGameState(state);
+        }
+    }
+
     public override void OnPlayerLeftRoom(Player otherPlayer)
     {
         Debug.Log($"OnPlayerLeftRoom: {otherPlayer.NickName}, ActorNumber: {otherPlayer.ActorNumber}");
-        disconnectedPlayerActorNumber = otherPlayer.ActorNumber;
+        // Store the ActorNumber of the player who just left
+        lastDisconnectedActorNumber = otherPlayer.ActorNumber;
+        // Store original ActorNumber for potential reconnection
+        StoreOriginalActorNumber(otherPlayer);
+        
+        if (PhotonNetwork.IsMasterClient)
+        {
+            DecrementActivePlayerCount();
+        }
         StartReconnectionTimer(otherPlayer);
     }
 
@@ -998,7 +1109,6 @@ public class GameManager : MonoBehaviourPunCallbacks
 
         isReconnecting = true;
         currentReconnectionTime = reconnectionTimeLimit;
-        disconnectedPlayerActorNumber = disconnectedPlayer.ActorNumber;
 
         if (ReconnectionUIManager.Instance != null)
             ReconnectionUIManager.Instance.ShowReconnectionUI(disconnectedPlayer.NickName);
@@ -1020,7 +1130,7 @@ public class GameManager : MonoBehaviourPunCallbacks
                 Player[] players = PhotonNetwork.PlayerList;
                 foreach (Player player in players)
                 {
-                    if (player.ActorNumber == disconnectedPlayerActorNumber)
+                    if (player.ActorNumber == disconnectedPlayer.ActorNumber)
                     {
                         HandlePlayerReconnected(player);
                         yield break;
@@ -1034,17 +1144,26 @@ public class GameManager : MonoBehaviourPunCallbacks
         {
             Debug.Log("Reconnection time limit reached. Declaring winner.");
             isReconnecting = false;
-            disconnectedPlayerActorNumber = -1;
-            Player winner = PhotonNetwork.LocalPlayer;
-            photonView.RPC("DeclareWinner", RpcTarget.All, winner);
+            // If in gameplay phase, declare the remaining player as winner
+            if (currentPhase == GamePhase.Gameplay && PhotonNetwork.PlayerList.Length == 1)
+            {
+                // Only one player left, declare them as winner
+                Player winner = PhotonNetwork.LocalPlayer;
+                photonView.RPC("RPC_GameOver", RpcTarget.All, true);
+            }
+            else
+            {
+                Player winner = PhotonNetwork.LocalPlayer;
+                photonView.RPC("DeclareWinner", RpcTarget.All, winner);
+            }
         }
     }
 
     private void HandlePlayerReconnected(Player reconnectedPlayer)
     {
+        
         Debug.Log($"HandlePlayerReconnected called for: {reconnectedPlayer.NickName}, ActorNumber: {reconnectedPlayer.ActorNumber}");
         isReconnecting = false;
-        disconnectedPlayerActorNumber = -1;
         ReconnectionUIManager.Instance.ShowReconnected(reconnectedPlayer.NickName   );
 
         // Hide the reconnection UI immediately
@@ -1063,7 +1182,26 @@ public class GameManager : MonoBehaviourPunCallbacks
 
     public override void OnPlayerEnteredRoom(Player newPlayer)
     {
-        Debug.Log($"OnPlayerEnteredRoom: {newPlayer.NickName}, ActorNumber: {newPlayer.ActorNumber}, isReconnecting: {isReconnecting}, disconnectedPlayerActorNumber: {disconnectedPlayerActorNumber}");
+        Debug.Log($"OnPlayerEnteredRoom: {newPlayer.NickName}, ActorNumber: {newPlayer.ActorNumber}, isReconnecting: {isReconnecting}");
+        if (PhotonNetwork.IsMasterClient)
+        {
+            IncrementActivePlayerCount();
+        }
+        // Placement phase: reset game for all if rejoin during placement
+        if (currentPhase == GamePhase.Placement)
+        {
+            SceneManager.LoadScene(SceneManager.GetActiveScene().buildIndex);
+            return;
+        }
+        // Gameplay phase: show reconnect popup to local player
+        else if (currentPhase == GamePhase.Gameplay)
+        {
+            if (newPlayer.IsLocal && ReconnectField != null)
+            {
+                ReconnectField.SetActive(true);
+            }
+            return;
+        }
         if (isReconnecting)
         {
             Debug.Log($"ActorNumber match! Calling HandlePlayerReconnected for {newPlayer.NickName}");
@@ -1087,6 +1225,8 @@ public class GameManager : MonoBehaviourPunCallbacks
             }
             opponentNameText.text = opponent.NickName;
         }
+        // Load state for the new player (if needed)
+        LoadStateForPlayer(newPlayer);
     }
 
     public override void OnDisconnected(DisconnectCause cause)
@@ -1119,13 +1259,17 @@ public class GameManager : MonoBehaviourPunCallbacks
             photonView.RPC("OnPlayerReconnected", RpcTarget.Others, PhotonNetwork.LocalPlayer);
             wasInGame = false;
         }
+        // Save state for this player
+        SaveStateForPlayer(PhotonNetwork.LocalPlayer);
+        // Load state for this player
+        LoadStateForPlayer(PhotonNetwork.LocalPlayer);
         // Optionally, update UI or state to resume the game
     }
 
     [PunRPC]
     private void OnPlayerReconnected(Player reconnectedPlayer)
     {
-        if (isReconnecting && reconnectedPlayer.ActorNumber == disconnectedPlayerActorNumber)
+        if (isReconnecting && reconnectedPlayer.ActorNumber == lastDisconnectedActorNumber)
         {
             HandlePlayerReconnected(reconnectedPlayer);
         }
@@ -1556,5 +1700,217 @@ public class GameManager : MonoBehaviourPunCallbacks
     public void OnBackButtonClicked() {
         // ...existing code...
     }
+
+    // --- GAME STATE SAVE/RESTORE FOR RECONNECTION ---
+    [System.Serializable]
+    public class GameStateData
+    {
+        public List<List<string>> playerBoard;
+        public List<List<string>> opponentBoard;
+        public int playerTries;
+        public int opponentTries;
+        public bool isMyTurn;
+        // Add more fields as needed
+    }
+
+    // Save current game state to Photon room properties
+    public void SaveStateToRoom()
+    {
+        var state = GetCurrentGameState();
+        string json = JsonConvert.SerializeObject(state);
+        ExitGames.Client.Photon.Hashtable props = new ExitGames.Client.Photon.Hashtable();
+        props["GameState"] = json;
+        if (PhotonNetwork.CurrentRoom != null)
+            PhotonNetwork.CurrentRoom.SetCustomProperties(props);
+    }
+
+    // Load game state from Photon room properties
+    public void LoadStateFromRoom()
+    {
+        if (PhotonNetwork.CurrentRoom != null && PhotonNetwork.CurrentRoom.CustomProperties.TryGetValue("GameState", out object stateJson))
+        {
+            var state = JsonConvert.DeserializeObject<GameStateData>(stateJson.ToString());
+            ApplyGameState(state);
+        }
+    }
+
+    // Get current game state from GameManager
+    public GameStateData GetCurrentGameState()
+    {
+        var state = new GameStateData();
+        // Player board
+        state.playerBoard = new List<List<string>>();
+        for (int i = 0; i < finalMap.Count; i++)
+        {
+            state.playerBoard.Add(new List<string>());
+            for (int j = 0; j < finalMap[i].Count; j++)
+            {
+                state.playerBoard[i].Add(finalMap[i][j].myChar);
+            }
+        }
+        // Opponent board
+        state.opponentBoard = new List<List<string>>();
+        for (int i = 0; i < opponentFinalMap.Count; i++)
+        {
+            state.opponentBoard.Add(new List<string>());
+            for (int j = 0; j < opponentFinalMap[i].Count; j++)
+            {
+                state.opponentBoard[i].Add(opponentFinalMap[i][j].myChar);
+            }
+        }
+        state.playerTries = playerTries;
+        state.opponentTries = opponentTries;
+        state.isMyTurn = isMyTurn;
+        return state;
+    }
+
+    // Apply loaded state to GameManager
+    public void ApplyGameState(GameStateData state)
+    {
+        // Player board
+        for (int i = 0; i < state.playerBoard.Count; i++)
+        {
+            for (int j = 0; j < state.playerBoard[i].Count; j++)
+            {
+                finalMap[i][j].myChar = state.playerBoard[i][j];
+            }
+        }
+        // Opponent board
+        for (int i = 0; i < state.opponentBoard.Count; i++)
+        {
+            for (int j = 0; j < state.opponentBoard[i].Count; j++)
+            {
+                opponentFinalMap[i][j].myChar = state.opponentBoard[i][j];
+            }
+        }
+        playerTries = state.playerTries;
+        opponentTries = state.opponentTries;
+        isMyTurn = state.isMyTurn;
+        // Optionally update UI here
+        // Load state after applying (for safety)
+        LoadStateFromRoom();
+    }
+
+    // Restored: ClearAllPreviews method
+    public void ClearAllPreviews()
+    {
+        // Clear highlights/previews from the player's grid
+        if (gridManager.getInstance() != null && gridManager.getInstance().gridItems != null)
+        {
+            foreach (var row in gridManager.getInstance().gridItems)
+            {
+                foreach (var box in row)
+                {
+                    box.heighlightme(false); // Remove highlight
+                    // If you have a preview sprite or state, reset it here as well
+                    // box.ClearPreview(); // Uncomment if such a method exists
+                }
+            }
+        }
+        // Optionally, clear from opponent grid as well
+        if (gridManager.getInstance() != null && gridManager.getInstance().opponentGridItems != null)
+        {
+            foreach (var row in gridManager.getInstance().opponentGridItems)
+            {
+                foreach (var box in row)
+                {
+                    box.heighlightme(false);
+                    // box.ClearPreview();
+                }
+            }
+        }
+    }
+
+    // Restored: ClearCurrentSelection method
+    public void ClearCurrentSelection()
+    {
+        // Deselect the currently selected box
+        if (currentSelectedBox != null)
+        {
+            currentSelectedBox.heighlightme(false);
+            // Remove preview text if any
+            if (currentSelectedBox.myLabel != null)
+                currentSelectedBox.myLabel.text = "";
+            currentSelectedBox.myChar = "";
+            currentSelectedBox = null;
+        }
+
+        // Reset the current string type
+        curruntStringType = "";
+
+        // Clear any highlights/previews
+        ClearAllPreviews();
+
+        // Reset the current weapon button
+        if (curruntBtn != null)
+        {
+            curruntBtn.myImage.color = Color.white;
+            curruntBtn.myImage.gameObject.GetComponent<Toggle>().interactable = true;
+            curruntBtn = null;
+        }
+
+        // Clear the current height infos
+        CurruntHeightInfos.Clear();
+    }
+
+    // // Photon callback: Save state when a player leaves
+    // public override void OnPlayerLeftRoom(Player otherPlayer)
+    // {
+    //     SaveStateToRoom();
+    // }
+
+    // // Photon callback: Load state when rejoining
+    // public override void OnJoinedRoom()
+    // {
+    //     LoadStateFromRoom();
+    // }
+
+public void OnHintButtonClicked()
+{
+    if (!isMyTurn) return; // Only allow on player's turn
+    StartCoroutine(ShowHintCoroutine());
+}
+
+private IEnumerator ShowHintCoroutine()
+{
+    // 1. Sahi line (weapon) select karo (opponentFinalMap)
+    if (opponentFinalMap.Count == 0) yield break;
+    var correctLine = opponentFinalMap[Random.Range(0, opponentFinalMap.Count)];
+    if (correctLine.Count == 0) yield break;
+
+    // Us line me se ek random box lo
+    int correctBoxIndex = Random.Range(0, correctLine.Count);
+    var correctBox = correctLine[correctBoxIndex];
+
+    // Save previous label (if any)
+    string prevLabel = correctBox.myLabel != null ? correctBox.myLabel.text : "";
+
+    // Highlight only (no alphabet change)
+    correctBox.heighlightme(true);
+    //if (correctBox.myLabel != null)
+    //    correctBox.myLabel.text = randomChar.ToString();
+
+    // 2. Random grid cell select karo (opponentGridItems me se, lekin correctBox se alag)
+    var grid = gridManager.getInstance().opponentGridItems;
+    int randI, randJ;
+    Box randomBox;
+    do
+    {
+        randI = Random.Range(0, grid.Count);
+        randJ = Random.Range(0, grid[randI].Count);
+        randomBox = grid[randI][randJ];
+    } while (randomBox == correctBox);
+
+    randomBox.heighlightme(true);
+
+    // 3. 4 second wait karo
+    yield return new WaitForSeconds(4f);
+
+    // 4. Highlights & label hatao
+    correctBox.heighlightme(false);
+    if (correctBox.myLabel != null)
+        correctBox.myLabel.text = prevLabel;
+    randomBox.heighlightme(false);
+}
 
 }
